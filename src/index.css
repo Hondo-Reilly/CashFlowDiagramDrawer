@@ -1,0 +1,11 @@
+@import '@astryxdesign/core/reset.css';
+@import '@astryxdesign/core/astryx.css';
+@import '@astryxdesign/theme-neutral/theme.css';
+
+body {
+  font-family: var(--font-family-body);
+  background-color: var(--color-background-body);
+  color: var(--color-text-primary);
+  margin: 0;
+  min-height: 100vh;
+}
