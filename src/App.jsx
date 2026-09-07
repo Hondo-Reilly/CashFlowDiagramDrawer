@@ -18,6 +18,7 @@ import {
 } from '@astryxdesign/core/Table'
 import { Text } from '@astryxdesign/core/Text'
 import { TextInput } from '@astryxdesign/core/TextInput'
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden'
 import { Link } from '@astryxdesign/core/Link'
 
 let nextId = 7
@@ -25,13 +26,22 @@ let nextId = 7
 const AXIS_COLOR = '#000000'
 const POSITIVE_COLOR = '#16a34a'
 const NEGATIVE_COLOR = '#dc2626'
+// Table cells clip their content, so the delete column needs an explicit size:
+// the icon button plus the cell's horizontal padding.
+const ACTIONS_COLUMN_WIDTH = 'calc(var(--spacing-8) + var(--spacing-6))'
 const ARROW_HEAD = 10
 const MAX_ARROW = 90
 const MIN_ARROW = 28
 
-function formatCash(amount) {
+function formatCash(amount, formatted = true) {
   const abs = Math.abs(amount)
-  return Number.isInteger(abs) ? `$${abs}` : `$${abs.toFixed(2)}`
+  const fractionDigits = Number.isInteger(abs) ? 0 : 2
+  const value = abs.toLocaleString('en-US', {
+    useGrouping: formatted,
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  })
+  return formatted ? `$${value}` : value
 }
 
 function parseNumericCashInput(raw) {
@@ -47,14 +57,14 @@ function parseNumericCashInput(raw) {
   return Number.isFinite(amount) ? amount : null
 }
 
-function parseCashFlow(raw) {
+function parseCashFlow(raw, formatted = true) {
   const text = String(raw ?? '').trim()
   if (text === '') {
     return { kind: 'empty', label: '', amount: null }
   }
   const amount = parseNumericCashInput(text)
   if (amount != null) {
-    return { kind: 'number', label: formatCash(amount), amount }
+    return { kind: 'number', label: formatCash(amount, formatted), amount }
   }
   return { kind: 'text', label: text, amount: null }
 }
@@ -89,7 +99,7 @@ function flowColor(flow, useColors, arrowDirection) {
   return AXIS_COLOR
 }
 
-function DiagramDrawer({ periods, useColors, svgRef }) {
+function DiagramDrawer({ periods, useColors, formatCashValues, svgRef }) {
   const dataPoints = periods
     .map((row) => ({ row, period: Number(row.period) }))
     .filter(({ period }) => Number.isFinite(period))
@@ -126,7 +136,7 @@ function DiagramDrawer({ periods, useColors, svgRef }) {
   const flowsByPeriod = new Map(
     ticks.map((period) => {
       const row = rowByPeriod.get(period)
-      return [period, row ? parseCashFlow(row.cashFlow) : null]
+      return [period, row ? parseCashFlow(row.cashFlow, formatCashValues) : null]
     }),
   )
   const numericAbs = [...flowsByPeriod.values()]
@@ -314,6 +324,7 @@ async function copySvgAsPng(svg) {
 export default function App() {
   const svgRef = useRef(null)
   const [useColors, setUseColors] = useState(false)
+  const [formatCashValues, setFormatCashValues] = useState(true)
   const [copyLabel, setCopyLabel] = useState('Copy diagram')
   const [periods, setPeriods] = useState([
     { id: 1, period: 0, cashFlow: '100', arrowDirection: 'up' },
@@ -341,6 +352,10 @@ export default function App() {
           : row,
       ),
     )
+  }
+
+  function removePeriod(id) {
+    setPeriods((rows) => rows.filter((row) => row.id !== id))
   }
 
   function addPeriod() {
@@ -391,12 +406,20 @@ export default function App() {
 
           <VStack gap={3}>
             <HStack gap={3} align="center" justify="between" wrap="wrap">
-              <CheckboxInput
-                label="Diagram colors"
-                value={useColors}
-                onChange={setUseColors}
-                size="sm"
-              />
+              <HStack gap={4} align="center" wrap="wrap">
+                <CheckboxInput
+                  label="Diagram colors"
+                  value={useColors}
+                  onChange={setUseColors}
+                  size="sm"
+                />
+                <CheckboxInput
+                  label="Format cash"
+                  value={formatCashValues}
+                  onChange={setFormatCashValues}
+                  size="sm"
+                />
+              </HStack>
               <Button
                 label={copyLabel}
                 variant="secondary"
@@ -407,6 +430,7 @@ export default function App() {
             <DiagramDrawer
               periods={periods}
               useColors={useColors}
+              formatCashValues={formatCashValues}
               svgRef={svgRef}
             />
           </VStack>
@@ -417,6 +441,14 @@ export default function App() {
             <TableHeader>
               <TableHeaderCell>Period</TableHeaderCell>
               <TableHeaderCell>Cash Flow</TableHeaderCell>
+              <TableHeaderCell
+                style={{
+                  width: ACTIONS_COLUMN_WIDTH,
+                  minWidth: ACTIONS_COLUMN_WIDTH,
+                }}
+              >
+                <VisuallyHidden>Actions</VisuallyHidden>
+              </TableHeaderCell>
             </TableHeader>
 
             <TableBody>
@@ -479,6 +511,16 @@ export default function App() {
                           />
                         )}
                       </HStack>
+                    </TableCell>
+                    <TableCell>
+                      <IconButton
+                        label={`Delete period ${row.period}`}
+                        tooltip="Delete period"
+                        icon={<Icon icon="close" />}
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removePeriod(row.id)}
+                      />
                     </TableCell>
                   </TableRow>
                 )
