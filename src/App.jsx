@@ -103,11 +103,15 @@ function arrowShaftLength(flow, heightPercent, maxAbs, defaultShaft) {
   return defaultShaft
 }
 
+function estimateTextWidth(label, fontSize) {
+  return Math.max(10, String(label).length * fontSize * 0.62)
+}
+
 function periodBoxSize(label) {
   const fontSize = 16
   const padX = 6
   const padY = 3
-  const textWidth = Math.max(10, String(label).length * fontSize * 0.62)
+  const textWidth = estimateTextWidth(label, fontSize)
   return {
     width: textWidth + padX * 2,
     height: fontSize + padY * 2,
@@ -204,6 +208,9 @@ function DiagramDrawer({
   const padX = 48
   const padTop = 36
   const padBottom = 36
+  const labelFontSize = 15
+  const labelPad = 8
+  const arrowSpread = 18
   const defaultShaft = (MIN_ARROW + MAX_ARROW) / 2
   const maxShaft = Math.max(
     MAX_ARROW,
@@ -238,19 +245,6 @@ function DiagramDrawer({
   )
   const height = axisY + maxShaft + padBottom
 
-  // Lock the on-screen scale to whatever fills the container at 50% spacing.
-  // Above 50%, keep growing the SVG coordinate spacing, then scale the whole
-  // diagram down so it still fits in the viewport instead of clipping.
-  const pxPerUnit = containerWidth > 0 ? containerWidth / widthAtDefault : 1
-  const naturalWidth = width * pxPerUnit
-  const naturalHeight = height * pxPerUnit
-  const fitScale =
-    containerWidth > 0 && naturalWidth > containerWidth
-      ? containerWidth / naturalWidth
-      : 1
-  const displayWidth = naturalWidth * fitScale
-  const displayHeight = naturalHeight * fitScale
-
   function xAt(periodNum) {
     if (ticks.length <= 1 || periodRange === 0) {
       return width / 2
@@ -261,10 +255,104 @@ function DiagramDrawer({
   const axisStartX = ticks.length ? xAt(ticks[0]) : padX
   const axisEndX = ticks.length ? xAt(ticks[ticks.length - 1]) : width - padX
 
+  const tickDrawings = ticks.map((periodNum) => {
+    const entries = entriesByPeriod.get(periodNum) ?? []
+    const x = xAt(periodNum)
+    const periodLabel = String(periodNum)
+    const box = periodBoxSize(periodLabel)
+
+    const arrows = entries.flatMap(({ row, flow }) => {
+      const arrowDirection = row.arrowDirection === 'down' ? 'down' : 'up'
+      const isZeroNumber = flow.kind === 'number' && flow.amount === 0
+      const showArrow =
+        flow.kind === 'text' || (flow.kind === 'number' && !isZeroNumber)
+      if (!showArrow) {
+        return []
+      }
+      const isPositive =
+        flow.kind === 'number' ? flow.amount > 0 : arrowDirection !== 'down'
+      return [{ row, flow, arrowDirection, isPositive }]
+    })
+
+    const directionCounts = { up: 0, down: 0 }
+    for (const arrow of arrows) {
+      directionCounts[arrow.isPositive ? 'up' : 'down'] += 1
+    }
+    const directionIndex = { up: 0, down: 0 }
+
+    const drawnArrows = arrows.map(({ row, flow, arrowDirection, isPositive }) => {
+      const color = flowColor(flow, useColors, arrowDirection)
+      const heightPercent = parseArrowHeightPercent(row.arrowHeight)
+      const shaft = arrowShaftLength(
+        flow,
+        heightPercent,
+        maxAbs,
+        defaultShaft,
+      )
+      const tipY = isPositive ? axisY - shaft : axisY + shaft
+      const labelY = isPositive ? tipY - 14 : tipY + 18
+      const side = isPositive ? 'up' : 'down'
+      const count = directionCounts[side]
+      const index = directionIndex[side]
+      directionIndex[side] += 1
+      // Only shift arrows that share a direction; opposite arrows
+      // stay on the period center.
+      const arrowX =
+        count === 1 ? x : x + (index - (count - 1) / 2) * arrowSpread
+      const labelWidth = estimateTextWidth(flow.label, labelFontSize)
+
+      return {
+        id: row.id,
+        color,
+        isPositive,
+        tipY,
+        labelY,
+        arrowX,
+        label: flow.label,
+        labelWidth,
+      }
+    })
+
+    return { periodNum, x, periodLabel, box, drawnArrows }
+  })
+
+  let viewMinX = 0
+  let viewMaxX = width
+  for (const tick of tickDrawings) {
+    viewMinX = Math.min(viewMinX, tick.x - tick.box.width / 2)
+    viewMaxX = Math.max(viewMaxX, tick.x + tick.box.width / 2)
+    for (const arrow of tick.drawnArrows) {
+      viewMinX = Math.min(
+        viewMinX,
+        arrow.arrowX - arrow.labelWidth / 2 - labelPad,
+      )
+      viewMaxX = Math.max(
+        viewMaxX,
+        arrow.arrowX + arrow.labelWidth / 2 + labelPad,
+      )
+    }
+  }
+  const viewWidth = Math.max(width, viewMaxX - viewMinX)
+
+  // Lock the on-screen scale to whatever fills the container at 50% spacing.
+  // Above 50%, keep growing the SVG coordinate spacing, then scale the whole
+  // diagram down so the axis still fits. Extra width from long labels can
+  // extend past the container and scroll horizontally instead of clipping.
+  const pxPerUnit = containerWidth > 0 ? containerWidth / widthAtDefault : 1
+  const axisNaturalWidth = width * pxPerUnit
+  const contentNaturalWidth = viewWidth * pxPerUnit
+  const naturalHeight = height * pxPerUnit
+  const fitScale =
+    containerWidth > 0 && axisNaturalWidth > containerWidth
+      ? containerWidth / axisNaturalWidth
+      : 1
+  const displayWidth = contentNaturalWidth * fitScale
+  const displayHeight = naturalHeight * fitScale
+
   return (
     <svg
       ref={svgRef}
-      viewBox={`0 0 ${width} ${height}`}
+      viewBox={`${viewMinX} 0 ${viewWidth} ${height}`}
       width={displayWidth || '100%'}
       height={displayHeight || undefined}
       role="img"
@@ -278,7 +366,13 @@ function DiagramDrawer({
         flexShrink: 0,
       }}
     >
-      <rect width={width} height={height} fill="#ffffff" />
+      <rect
+        x={viewMinX}
+        y={0}
+        width={viewWidth}
+        height={height}
+        fill="#ffffff"
+      />
       {ticks.length > 0 && (
         <line
           x1={axisStartX}
@@ -290,113 +384,64 @@ function DiagramDrawer({
         />
       )}
 
-      {ticks.map((periodNum) => {
-        const entries = entriesByPeriod.get(periodNum) ?? []
-        const x = xAt(periodNum)
-        const periodLabel = String(periodNum)
-        const box = periodBoxSize(periodLabel)
-        const arrowSpread = 18
-
-        const arrows = entries.flatMap(({ row, flow }) => {
-          const arrowDirection =
-            row.arrowDirection === 'down' ? 'down' : 'up'
-          const isZeroNumber = flow.kind === 'number' && flow.amount === 0
-          const showArrow =
-            flow.kind === 'text' || (flow.kind === 'number' && !isZeroNumber)
-          if (!showArrow) {
-            return []
-          }
-          const isPositive =
-            flow.kind === 'number'
-              ? flow.amount > 0
-              : arrowDirection !== 'down'
-          return [{ row, flow, arrowDirection, isPositive }]
-        })
-
-        const directionCounts = { up: 0, down: 0 }
-        for (const arrow of arrows) {
-          directionCounts[arrow.isPositive ? 'up' : 'down'] += 1
-        }
-        const directionIndex = { up: 0, down: 0 }
-
-        return (
-          <g key={`tick-${periodNum}`}>
-            {arrows.map(({ row, flow, arrowDirection, isPositive }) => {
-              const color = flowColor(flow, useColors, arrowDirection)
-              const heightPercent = parseArrowHeightPercent(row.arrowHeight)
-              const shaft = arrowShaftLength(
-                flow,
-                heightPercent,
-                maxAbs,
-                defaultShaft,
-              )
-              const tipY = isPositive ? axisY - shaft : axisY + shaft
-              const labelY = isPositive ? tipY - 14 : tipY + 18
-              const side = isPositive ? 'up' : 'down'
-              const count = directionCounts[side]
-              const index = directionIndex[side]
-              directionIndex[side] += 1
-              // Only shift arrows that share a direction; opposite arrows
-              // stay on the period center.
-              const arrowX =
-                count === 1
-                  ? x
-                  : x + (index - (count - 1) / 2) * arrowSpread
-
-              return (
-                <g key={row.id}>
-                  <line
-                    x1={arrowX}
-                    y1={axisY}
-                    x2={arrowX}
-                    y2={isPositive ? tipY + ARROW_HEAD : tipY - ARROW_HEAD}
-                    stroke={color}
-                    strokeWidth={2.5}
-                  />
-                  <polygon
-                    points={
-                      isPositive
-                        ? `${arrowX},${tipY} ${arrowX - ARROW_HEAD / 2},${tipY + ARROW_HEAD} ${arrowX + ARROW_HEAD / 2},${tipY + ARROW_HEAD}`
-                        : `${arrowX},${tipY} ${arrowX - ARROW_HEAD / 2},${tipY - ARROW_HEAD} ${arrowX + ARROW_HEAD / 2},${tipY - ARROW_HEAD}`
-                    }
-                    fill={color}
-                  />
-                  <text
-                    x={arrowX}
-                    y={labelY}
-                    textAnchor="middle"
-                    fill={color}
-                    fontSize="15"
-                    fontFamily="system-ui, sans-serif"
-                    fontWeight="600"
-                  >
-                    {flow.label}
-                  </text>
-                </g>
-              )
-            })}
-            <rect
-              x={x - box.width / 2}
-              y={axisY - box.height / 2}
-              width={box.width}
-              height={box.height}
-              fill="#ffffff"
-            />
-            <text
-              x={x}
-              y={axisY}
-              textAnchor="middle"
-              dominantBaseline="central"
-              fill={AXIS_COLOR}
-              fontSize="16"
-              fontFamily="system-ui, sans-serif"
-              fontWeight="600"
-            >
-              {periodLabel}
-            </text>
-          </g>
-        )
-      })}
+      {tickDrawings.map(({ periodNum, x, periodLabel, box, drawnArrows }) => (
+        <g key={`tick-${periodNum}`}>
+          {drawnArrows.map((arrow) => (
+            <g key={arrow.id}>
+              <line
+                x1={arrow.arrowX}
+                y1={axisY}
+                x2={arrow.arrowX}
+                y2={
+                  arrow.isPositive
+                    ? arrow.tipY + ARROW_HEAD
+                    : arrow.tipY - ARROW_HEAD
+                }
+                stroke={arrow.color}
+                strokeWidth={2.5}
+              />
+              <polygon
+                points={
+                  arrow.isPositive
+                    ? `${arrow.arrowX},${arrow.tipY} ${arrow.arrowX - ARROW_HEAD / 2},${arrow.tipY + ARROW_HEAD} ${arrow.arrowX + ARROW_HEAD / 2},${arrow.tipY + ARROW_HEAD}`
+                    : `${arrow.arrowX},${arrow.tipY} ${arrow.arrowX - ARROW_HEAD / 2},${arrow.tipY - ARROW_HEAD} ${arrow.arrowX + ARROW_HEAD / 2},${arrow.tipY - ARROW_HEAD}`
+                }
+                fill={arrow.color}
+              />
+              <text
+                x={arrow.arrowX}
+                y={arrow.labelY}
+                textAnchor="middle"
+                fill={arrow.color}
+                fontSize={labelFontSize}
+                fontFamily="system-ui, sans-serif"
+                fontWeight="600"
+              >
+                {arrow.label}
+              </text>
+            </g>
+          ))}
+          <rect
+            x={x - box.width / 2}
+            y={axisY - box.height / 2}
+            width={box.width}
+            height={box.height}
+            fill="#ffffff"
+          />
+          <text
+            x={x}
+            y={axisY}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fill={AXIS_COLOR}
+            fontSize="16"
+            fontFamily="system-ui, sans-serif"
+            fontWeight="600"
+          >
+            {periodLabel}
+          </text>
+        </g>
+      ))}
     </svg>
   )
 }
@@ -600,9 +645,9 @@ export default function App() {
               value={periodSpacing}
               onChange={setPeriodSpacing}
               min={20}
-              max={100}
+              max={200}
               step={1}
-              formatValue={(value) => `${value}%`}
+              formatValue={(value) => `${value}% (${Math.round(periodSpacing * 72 * 0.01)}px)`}
               valueDisplay="text"
               width="100%"
             />
