@@ -84,10 +84,23 @@ function parseArrowHeightPercent(raw) {
     return null
   }
   const value = Number(text)
-  if (!Number.isFinite(value)) {
+  if (!Number.isFinite(value) || value < 0) {
     return null
   }
-  return Math.min(100, Math.max(1, value))
+  return value
+}
+
+function arrowShaftLength(flow, heightPercent, maxAbs, defaultShaft) {
+  if (heightPercent != null) {
+    return (heightPercent / 100) * MAX_ARROW
+  }
+  if (flow.kind === 'number') {
+    return (
+      MIN_ARROW +
+      (Math.abs(flow.amount) / maxAbs) * (MAX_ARROW - MIN_ARROW)
+    )
+  }
+  return defaultShaft
 }
 
 function periodBoxSize(label) {
@@ -191,7 +204,27 @@ function DiagramDrawer({
   const padX = 48
   const padTop = 36
   const padBottom = 36
-  const axisY = padTop + MAX_ARROW + 24
+  const defaultShaft = (MIN_ARROW + MAX_ARROW) / 2
+  const maxShaft = Math.max(
+    MAX_ARROW,
+    ...[...entriesByPeriod.values()].flatMap((entries) =>
+      entries.map(({ row, flow }) => {
+        const isZeroNumber = flow.kind === 'number' && flow.amount === 0
+        const showArrow =
+          flow.kind === 'text' || (flow.kind === 'number' && !isZeroNumber)
+        if (!showArrow) {
+          return 0
+        }
+        return arrowShaftLength(
+          flow,
+          parseArrowHeightPercent(row.arrowHeight),
+          maxAbs,
+          defaultShaft,
+        )
+      }),
+    ),
+  )
+  const axisY = padTop + maxShaft + 24
   const tickCount = Math.max(1, ticks.length)
   // Keep the design coordinate system at the 50% size; only tick spacing grows.
   const widthAtDefault = Math.max(
@@ -203,8 +236,7 @@ function DiagramDrawer({
     BASE_DIAGRAM_MIN_WIDTH * spacingScale,
     Math.max(tickCount - 1, 1) * tickSpacing + padX * 2,
   )
-  const height = axisY + MAX_ARROW + padBottom
-  const defaultShaft = (MIN_ARROW + MAX_ARROW) / 2
+  const height = axisY + maxShaft + padBottom
 
   // Lock the on-screen scale to whatever fills the container at 50% spacing.
   // Above 50%, keep growing the SVG coordinate spacing, then scale the whole
@@ -292,14 +324,12 @@ function DiagramDrawer({
             {arrows.map(({ row, flow, arrowDirection, isPositive }) => {
               const color = flowColor(flow, useColors, arrowDirection)
               const heightPercent = parseArrowHeightPercent(row.arrowHeight)
-              const shaft =
-                flow.kind === 'number'
-                  ? MIN_ARROW +
-                    (Math.abs(flow.amount) / maxAbs) *
-                      (MAX_ARROW - MIN_ARROW)
-                  : heightPercent != null
-                    ? (heightPercent / 100) * MAX_ARROW
-                    : defaultShaft
+              const shaft = arrowShaftLength(
+                flow,
+                heightPercent,
+                maxAbs,
+                defaultShaft,
+              )
               const tipY = isPositive ? axisY - shaft : axisY + shaft
               const labelY = isPositive ? tipY - 14 : tipY + 18
               const side = isPositive ? 'up' : 'down'
@@ -716,44 +746,42 @@ export default function App() {
                           size="sm"
                           width="100%"
                         />
+                        <TextInput
+                          label={`Arrow height for period ${row.period}`}
+                          isLabelHidden
+                          value={String(row.arrowHeight ?? '')}
+                          onChange={(value) =>
+                            updatePeriod(row.id, 'arrowHeight', value)
+                          }
+                          placeholder="Height %"
+                          size="sm"
+                          width={ARROW_HEIGHT_INPUT_WIDTH}
+                        />
                         {showDirectionToggle && (
-                          <>
-                            <TextInput
-                              label={`Arrow height for period ${row.period}`}
-                              isLabelHidden
-                              value={String(row.arrowHeight ?? '')}
-                              onChange={(value) =>
-                                updatePeriod(row.id, 'arrowHeight', value)
-                              }
-                              placeholder="Height %"
-                              size="sm"
-                              width={ARROW_HEIGHT_INPUT_WIDTH}
-                            />
-                            <IconButton
-                              label={
-                                arrowDirection === 'down'
-                                  ? 'Point arrow up'
-                                  : 'Point arrow down'
-                              }
-                              tooltip={
-                                arrowDirection === 'down'
-                                  ? 'Arrow pointing down — click to point up'
-                                  : 'Arrow pointing up — click to point down'
-                              }
-                              icon={
-                                <Icon
-                                  icon={
-                                    arrowDirection === 'down'
-                                      ? 'arrowDown'
-                                      : 'arrowUp'
-                                  }
-                                />
-                              }
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => toggleArrowDirection(row.id)}
-                            />
-                          </>
+                          <IconButton
+                            label={
+                              arrowDirection === 'down'
+                                ? 'Point arrow up'
+                                : 'Point arrow down'
+                            }
+                            tooltip={
+                              arrowDirection === 'down'
+                                ? 'Arrow pointing down — click to point up'
+                                : 'Arrow pointing up — click to point down'
+                            }
+                            icon={
+                              <Icon
+                                icon={
+                                  arrowDirection === 'down'
+                                    ? 'arrowDown'
+                                    : 'arrowUp'
+                                }
+                              />
+                            }
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => toggleArrowDirection(row.id)}
+                          />
                         )}
                       </HStack>
                     </TableCell>
