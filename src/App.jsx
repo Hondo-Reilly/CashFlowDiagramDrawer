@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import { Card } from '@astryxdesign/core/Card'
 import { Center } from '@astryxdesign/core/Center'
@@ -17,6 +17,7 @@ import {
   TableCell,
 } from '@astryxdesign/core/Table'
 import { Text } from '@astryxdesign/core/Text'
+import { Slider } from '@astryxdesign/core/Slider'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden'
 import { Link } from '@astryxdesign/core/Link'
@@ -26,12 +27,17 @@ let nextId = 7
 const AXIS_COLOR = '#000000'
 const POSITIVE_COLOR = '#16a34a'
 const NEGATIVE_COLOR = '#dc2626'
-// Table cells clip their content, so the delete column needs an explicit size:
-// the icon button plus the cell's horizontal padding.
+// Table cells clip their content, so fixed columns need an explicit size.
+const PERIOD_COLUMN_WIDTH = 'calc(var(--spacing-10) * 3)'
+const ARROW_HEIGHT_INPUT_WIDTH = 'calc(var(--spacing-10) * 3)'
 const ACTIONS_COLUMN_WIDTH = 'calc(var(--spacing-8) + var(--spacing-6))'
 const ARROW_HEAD = 10
 const MAX_ARROW = 90
 const MIN_ARROW = 28
+const BASE_TICK_SPACING = 72
+const BASE_DIAGRAM_MIN_WIDTH = 360
+const BASE_PERIOD_SPACING = 50
+const MIN_SPACING_SCALE = 0.2
 
 function formatCash(amount, formatted = true) {
   const abs = Math.abs(amount)
@@ -69,6 +75,20 @@ function parseCashFlow(raw, formatted = true) {
   return { kind: 'text', label: text, amount: null }
 }
 
+function parseArrowHeightPercent(raw) {
+  const text = String(raw ?? '')
+    .trim()
+    .replace(/%/g, '')
+  if (text === '') {
+    return null
+  }
+  const value = Number(text)
+  if (!Number.isFinite(value)) {
+    return null
+  }
+  return Math.min(100, Math.max(1, value))
+}
+
 function periodBoxSize(label) {
   const fontSize = 16
   const padX = 6
@@ -99,7 +119,14 @@ function flowColor(flow, useColors, arrowDirection) {
   return AXIS_COLOR
 }
 
-function DiagramDrawer({ periods, useColors, formatCashValues, svgRef }) {
+function DiagramDrawer({
+  periods,
+  useColors,
+  formatCashValues,
+  periodSpacing,
+  containerWidth,
+  svgRef,
+}) {
   const dataPoints = periods
     .map((row) => ({ row, period: Number(row.period) }))
     .filter(({ period }) => Number.isFinite(period))
@@ -144,14 +171,40 @@ function DiagramDrawer({ periods, useColors, formatCashValues, svgRef }) {
     .map((flow) => Math.abs(flow.amount))
   const maxAbs = Math.max(1, ...numericAbs)
 
+  const spacingScale = Math.max(
+    periodSpacing / BASE_PERIOD_SPACING,
+    MIN_SPACING_SCALE,
+  )
   const padX = 48
   const padTop = 36
   const padBottom = 36
   const axisY = padTop + MAX_ARROW + 24
   const tickCount = Math.max(1, ticks.length)
-  const width = Math.max(360, tickCount * 72 + padX * 2)
+  // Keep the design coordinate system at the 50% size; only tick spacing grows.
+  const widthAtDefault = Math.max(
+    BASE_DIAGRAM_MIN_WIDTH,
+    Math.max(tickCount - 1, 1) * BASE_TICK_SPACING + padX * 2,
+  )
+  const tickSpacing = BASE_TICK_SPACING * spacingScale
+  const width = Math.max(
+    BASE_DIAGRAM_MIN_WIDTH * spacingScale,
+    Math.max(tickCount - 1, 1) * tickSpacing + padX * 2,
+  )
   const height = axisY + MAX_ARROW + padBottom
   const defaultShaft = (MIN_ARROW + MAX_ARROW) / 2
+
+  // Lock the on-screen scale to whatever fills the container at 50% spacing.
+  // Above 50%, keep growing the SVG coordinate spacing, then scale the whole
+  // diagram down so it still fits in the viewport instead of clipping.
+  const pxPerUnit = containerWidth > 0 ? containerWidth / widthAtDefault : 1
+  const naturalWidth = width * pxPerUnit
+  const naturalHeight = height * pxPerUnit
+  const fitScale =
+    containerWidth > 0 && naturalWidth > containerWidth
+      ? containerWidth / naturalWidth
+      : 1
+  const displayWidth = naturalWidth * fitScale
+  const displayHeight = naturalHeight * fitScale
 
   function xAt(periodNum) {
     if (ticks.length <= 1 || periodRange === 0) {
@@ -167,10 +220,18 @@ function DiagramDrawer({ periods, useColors, formatCashValues, svgRef }) {
     <svg
       ref={svgRef}
       viewBox={`0 0 ${width} ${height}`}
-      width="100%"
+      width={displayWidth || '100%'}
+      height={displayHeight || undefined}
       role="img"
       aria-label="Cash flow diagram"
-      style={{ display: 'block', overflow: 'visible', background: '#ffffff' }}
+      style={{
+        display: 'block',
+        overflow: 'visible',
+        background: '#ffffff',
+        width: displayWidth || '100%',
+        height: displayHeight || 'auto',
+        flexShrink: 0,
+      }}
     >
       <rect width={width} height={height} fill="#ffffff" />
       {ticks.length > 0 && (
@@ -203,11 +264,14 @@ function DiagramDrawer({ periods, useColors, formatCashValues, svgRef }) {
           flow?.kind === 'number'
             ? flow.amount > 0
             : arrowDirection !== 'down'
+        const heightPercent = parseArrowHeightPercent(row?.arrowHeight)
         const shaft =
           flow?.kind === 'number'
             ? MIN_ARROW +
               (Math.abs(flow.amount) / maxAbs) * (MAX_ARROW - MIN_ARROW)
-            : defaultShaft
+            : heightPercent != null
+              ? (heightPercent / 100) * MAX_ARROW
+              : defaultShaft
         const tipY = isPositive ? axisY - shaft : axisY + shaft
         const labelY = isPositive ? tipY - 14 : tipY + 18
 
@@ -323,17 +387,34 @@ async function copySvgAsPng(svg) {
 
 export default function App() {
   const svgRef = useRef(null)
+  const diagramViewportRef = useRef(null)
+  const [diagramWidth, setDiagramWidth] = useState(0)
   const [useColors, setUseColors] = useState(false)
   const [formatCashValues, setFormatCashValues] = useState(true)
+  const [periodSpacing, setPeriodSpacing] = useState(BASE_PERIOD_SPACING)
   const [copyLabel, setCopyLabel] = useState('Copy diagram')
   const [periods, setPeriods] = useState([
-    { id: 1, period: 0, cashFlow: '100', arrowDirection: 'up' },
-    { id: 2, period: 1, cashFlow: '-100', arrowDirection: 'up' },
-    { id: 3, period: 2, cashFlow: '100', arrowDirection: 'up' },
-    { id: 4, period: 3, cashFlow: '-150', arrowDirection: 'up' },
-    { id: 5, period: 4, cashFlow: '-150', arrowDirection: 'up' },
-    { id: 6, period: 5, cashFlow: '50', arrowDirection: 'up' },
+    { id: 1, period: 0, cashFlow: '100', arrowDirection: 'up', arrowHeight: '' },
+    { id: 2, period: 1, cashFlow: '-100', arrowDirection: 'up', arrowHeight: '' },
+    { id: 3, period: 2, cashFlow: '100', arrowDirection: 'up', arrowHeight: '' },
+    { id: 4, period: 3, cashFlow: '-150', arrowDirection: 'up', arrowHeight: '' },
+    { id: 5, period: 4, cashFlow: '-150', arrowDirection: 'up', arrowHeight: '' },
+    { id: 6, period: 5, cashFlow: '50', arrowDirection: 'up', arrowHeight: '' },
   ])
+
+  useEffect(() => {
+    const node = diagramViewportRef.current
+    if (!node) {
+      return undefined
+    }
+    const updateWidth = () => {
+      setDiagramWidth(node.clientWidth)
+    }
+    updateWidth()
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   function updatePeriod(id, field, value) {
     setPeriods((rows) =>
@@ -370,6 +451,7 @@ export default function App() {
         period: nextPeriod,
         cashFlow: '0',
         arrowDirection: 'up',
+        arrowHeight: '',
       },
     ])
   }
@@ -427,19 +509,46 @@ export default function App() {
                 onClick={handleCopyDiagram}
               />
             </HStack>
-            <DiagramDrawer
-              periods={periods}
-              useColors={useColors}
-              formatCashValues={formatCashValues}
-              svgRef={svgRef}
+            <Slider
+              label="Period spacing"
+              value={periodSpacing}
+              onChange={setPeriodSpacing}
+              min={20}
+              max={100}
+              step={1}
+              formatValue={(value) => `${value}%`}
+              valueDisplay="text"
+              width="100%"
             />
+            <HStack
+              ref={diagramViewportRef}
+              isScrollable
+              width="100%"
+              align="start"
+            >
+              <DiagramDrawer
+                periods={periods}
+                useColors={useColors}
+                formatCashValues={formatCashValues}
+                periodSpacing={periodSpacing}
+                containerWidth={diagramWidth}
+                svgRef={svgRef}
+              />
+            </HStack>
           </VStack>
 
           <Divider />
 
           <Table>
             <TableHeader>
-              <TableHeaderCell>Period</TableHeaderCell>
+              <TableHeaderCell
+                style={{
+                  width: PERIOD_COLUMN_WIDTH,
+                  minWidth: PERIOD_COLUMN_WIDTH,
+                }}
+              >
+                Period
+              </TableHeaderCell>
               <TableHeaderCell>Cash Flow</TableHeaderCell>
               <TableHeaderCell
                 style={{
@@ -485,30 +594,43 @@ export default function App() {
                           width="100%"
                         />
                         {showDirectionToggle && (
-                          <IconButton
-                            label={
-                              arrowDirection === 'down'
-                                ? 'Point arrow up'
-                                : 'Point arrow down'
-                            }
-                            tooltip={
-                              arrowDirection === 'down'
-                                ? 'Arrow pointing down — click to point up'
-                                : 'Arrow pointing up — click to point down'
-                            }
-                            icon={
-                              <Icon
-                                icon={
-                                  arrowDirection === 'down'
-                                    ? 'arrowDown'
-                                    : 'arrowUp'
-                                }
-                              />
-                            }
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => toggleArrowDirection(row.id)}
-                          />
+                          <>
+                            <TextInput
+                              label={`Arrow height for period ${row.period}`}
+                              isLabelHidden
+                              value={String(row.arrowHeight ?? '')}
+                              onChange={(value) =>
+                                updatePeriod(row.id, 'arrowHeight', value)
+                              }
+                              placeholder="Height %"
+                              size="sm"
+                              width={ARROW_HEIGHT_INPUT_WIDTH}
+                            />
+                            <IconButton
+                              label={
+                                arrowDirection === 'down'
+                                  ? 'Point arrow up'
+                                  : 'Point arrow down'
+                              }
+                              tooltip={
+                                arrowDirection === 'down'
+                                  ? 'Arrow pointing down — click to point up'
+                                  : 'Arrow pointing up — click to point down'
+                              }
+                              icon={
+                                <Icon
+                                  icon={
+                                    arrowDirection === 'down'
+                                      ? 'arrowDown'
+                                      : 'arrowUp'
+                                  }
+                                />
+                              }
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => toggleArrowDirection(row.id)}
+                            />
+                          </>
                         )}
                       </HStack>
                     </TableCell>
