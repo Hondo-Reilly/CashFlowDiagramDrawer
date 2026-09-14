@@ -31,6 +31,7 @@ const NEGATIVE_COLOR = '#dc2626'
 const PERIOD_COLUMN_WIDTH = 'calc(var(--spacing-10) * 3)'
 const ARROW_HEIGHT_INPUT_WIDTH = 'calc(var(--spacing-10) * 3)'
 const ACTIONS_COLUMN_WIDTH = 'calc(var(--spacing-8) + var(--spacing-6))'
+const DRAG_HANDLE_COLUMN_WIDTH = 'calc(var(--spacing-8) + var(--spacing-6))'
 const ARROW_HEAD = 10
 const MAX_ARROW = 90
 const MIN_ARROW = 28
@@ -132,9 +133,14 @@ function DiagramDrawer({
     .filter(({ period }) => Number.isFinite(period))
     .sort((a, b) => a.period - b.period)
 
-  const rowByPeriod = new Map()
+  const rowsByPeriod = new Map()
   for (const point of dataPoints) {
-    rowByPeriod.set(point.period, point.row)
+    const existing = rowsByPeriod.get(point.period)
+    if (existing) {
+      existing.push(point.row)
+    } else {
+      rowsByPeriod.set(point.period, [point.row])
+    }
   }
 
   const minPeriod = dataPoints.length
@@ -160,15 +166,22 @@ function DiagramDrawer({
     ticks.sort((a, b) => a - b)
   }
 
-  const flowsByPeriod = new Map(
+  const entriesByPeriod = new Map(
     ticks.map((period) => {
-      const row = rowByPeriod.get(period)
-      return [period, row ? parseCashFlow(row.cashFlow, formatCashValues) : null]
+      const rows = rowsByPeriod.get(period) ?? []
+      return [
+        period,
+        rows.map((row) => ({
+          row,
+          flow: parseCashFlow(row.cashFlow, formatCashValues),
+        })),
+      ]
     }),
   )
-  const numericAbs = [...flowsByPeriod.values()]
-    .filter((flow) => flow?.kind === 'number' && flow.amount !== 0)
-    .map((flow) => Math.abs(flow.amount))
+  const numericAbs = [...entriesByPeriod.values()]
+    .flat()
+    .filter(({ flow }) => flow.kind === 'number' && flow.amount !== 0)
+    .map(({ flow }) => Math.abs(flow.amount))
   const maxAbs = Math.max(1, ...numericAbs)
 
   const spacingScale = Math.max(
@@ -246,68 +259,92 @@ function DiagramDrawer({
       )}
 
       {ticks.map((periodNum) => {
-        const row = rowByPeriod.get(periodNum)
-        const flow = flowsByPeriod.get(periodNum)
-        const arrowDirection = row?.arrowDirection === 'down' ? 'down' : 'up'
+        const entries = entriesByPeriod.get(periodNum) ?? []
         const x = xAt(periodNum)
         const periodLabel = String(periodNum)
         const box = periodBoxSize(periodLabel)
-        const color = flow
-          ? flowColor(flow, useColors, arrowDirection)
-          : AXIS_COLOR
+        const arrowSpread = 18
 
-        const isZeroNumber = flow?.kind === 'number' && flow.amount === 0
-        const showArrow =
-          !!flow &&
-          (flow.kind === 'text' || (flow.kind === 'number' && !isZeroNumber))
-        const isPositive =
-          flow?.kind === 'number'
-            ? flow.amount > 0
-            : arrowDirection !== 'down'
-        const heightPercent = parseArrowHeightPercent(row?.arrowHeight)
-        const shaft =
-          flow?.kind === 'number'
-            ? MIN_ARROW +
-              (Math.abs(flow.amount) / maxAbs) * (MAX_ARROW - MIN_ARROW)
-            : heightPercent != null
-              ? (heightPercent / 100) * MAX_ARROW
-              : defaultShaft
-        const tipY = isPositive ? axisY - shaft : axisY + shaft
-        const labelY = isPositive ? tipY - 14 : tipY + 18
+        const arrows = entries.flatMap(({ row, flow }) => {
+          const arrowDirection =
+            row.arrowDirection === 'down' ? 'down' : 'up'
+          const isZeroNumber = flow.kind === 'number' && flow.amount === 0
+          const showArrow =
+            flow.kind === 'text' || (flow.kind === 'number' && !isZeroNumber)
+          if (!showArrow) {
+            return []
+          }
+          const isPositive =
+            flow.kind === 'number'
+              ? flow.amount > 0
+              : arrowDirection !== 'down'
+          return [{ row, flow, arrowDirection, isPositive }]
+        })
+
+        const directionCounts = { up: 0, down: 0 }
+        for (const arrow of arrows) {
+          directionCounts[arrow.isPositive ? 'up' : 'down'] += 1
+        }
+        const directionIndex = { up: 0, down: 0 }
 
         return (
-          <g key={row?.id ?? `tick-${periodNum}`}>
-            {showArrow && (
-              <>
-                <line
-                  x1={x}
-                  y1={axisY}
-                  x2={x}
-                  y2={isPositive ? tipY + ARROW_HEAD : tipY - ARROW_HEAD}
-                  stroke={color}
-                  strokeWidth={2.5}
-                />
-                <polygon
-                  points={
-                    isPositive
-                      ? `${x},${tipY} ${x - ARROW_HEAD / 2},${tipY + ARROW_HEAD} ${x + ARROW_HEAD / 2},${tipY + ARROW_HEAD}`
-                      : `${x},${tipY} ${x - ARROW_HEAD / 2},${tipY - ARROW_HEAD} ${x + ARROW_HEAD / 2},${tipY - ARROW_HEAD}`
-                  }
-                  fill={color}
-                />
-                <text
-                  x={x}
-                  y={labelY}
-                  textAnchor="middle"
-                  fill={color}
-                  fontSize="15"
-                  fontFamily="system-ui, sans-serif"
-                  fontWeight="600"
-                >
-                  {flow.label}
-                </text>
-              </>
-            )}
+          <g key={`tick-${periodNum}`}>
+            {arrows.map(({ row, flow, arrowDirection, isPositive }) => {
+              const color = flowColor(flow, useColors, arrowDirection)
+              const heightPercent = parseArrowHeightPercent(row.arrowHeight)
+              const shaft =
+                flow.kind === 'number'
+                  ? MIN_ARROW +
+                    (Math.abs(flow.amount) / maxAbs) *
+                      (MAX_ARROW - MIN_ARROW)
+                  : heightPercent != null
+                    ? (heightPercent / 100) * MAX_ARROW
+                    : defaultShaft
+              const tipY = isPositive ? axisY - shaft : axisY + shaft
+              const labelY = isPositive ? tipY - 14 : tipY + 18
+              const side = isPositive ? 'up' : 'down'
+              const count = directionCounts[side]
+              const index = directionIndex[side]
+              directionIndex[side] += 1
+              // Only shift arrows that share a direction; opposite arrows
+              // stay on the period center.
+              const arrowX =
+                count === 1
+                  ? x
+                  : x + (index - (count - 1) / 2) * arrowSpread
+
+              return (
+                <g key={row.id}>
+                  <line
+                    x1={arrowX}
+                    y1={axisY}
+                    x2={arrowX}
+                    y2={isPositive ? tipY + ARROW_HEAD : tipY - ARROW_HEAD}
+                    stroke={color}
+                    strokeWidth={2.5}
+                  />
+                  <polygon
+                    points={
+                      isPositive
+                        ? `${arrowX},${tipY} ${arrowX - ARROW_HEAD / 2},${tipY + ARROW_HEAD} ${arrowX + ARROW_HEAD / 2},${tipY + ARROW_HEAD}`
+                        : `${arrowX},${tipY} ${arrowX - ARROW_HEAD / 2},${tipY - ARROW_HEAD} ${arrowX + ARROW_HEAD / 2},${tipY - ARROW_HEAD}`
+                    }
+                    fill={color}
+                  />
+                  <text
+                    x={arrowX}
+                    y={labelY}
+                    textAnchor="middle"
+                    fill={color}
+                    fontSize="15"
+                    fontFamily="system-ui, sans-serif"
+                    fontWeight="600"
+                  >
+                    {flow.label}
+                  </text>
+                </g>
+              )
+            })}
             <rect
               x={x - box.width / 2}
               y={axisY - box.height / 2}
@@ -393,6 +430,8 @@ export default function App() {
   const [formatCashValues, setFormatCashValues] = useState(true)
   const [periodSpacing, setPeriodSpacing] = useState(BASE_PERIOD_SPACING)
   const [copyLabel, setCopyLabel] = useState('Copy diagram')
+  const [draggingId, setDraggingId] = useState(null)
+  const [dragOverId, setDragOverId] = useState(null)
   const [periods, setPeriods] = useState([
     { id: 1, period: 0, cashFlow: '100', arrowDirection: 'up', arrowHeight: '' },
     { id: 2, period: 1, cashFlow: '-100', arrowDirection: 'up', arrowHeight: '' },
@@ -437,6 +476,23 @@ export default function App() {
 
   function removePeriod(id) {
     setPeriods((rows) => rows.filter((row) => row.id !== id))
+  }
+
+  function reorderPeriod(fromId, toId) {
+    if (fromId === toId) {
+      return
+    }
+    setPeriods((rows) => {
+      const fromIndex = rows.findIndex((row) => row.id === fromId)
+      const toIndex = rows.findIndex((row) => row.id === toId)
+      if (fromIndex < 0 || toIndex < 0) {
+        return rows
+      }
+      const next = [...rows]
+      const [moved] = next.splice(fromIndex, 1)
+      next.splice(toIndex, 0, moved)
+      return next
+    })
   }
 
   function addPeriod() {
@@ -543,6 +599,14 @@ export default function App() {
             <TableHeader>
               <TableHeaderCell
                 style={{
+                  width: DRAG_HANDLE_COLUMN_WIDTH,
+                  minWidth: DRAG_HANDLE_COLUMN_WIDTH,
+                }}
+              >
+                <VisuallyHidden>Reorder</VisuallyHidden>
+              </TableHeaderCell>
+              <TableHeaderCell
+                style={{
                   width: PERIOD_COLUMN_WIDTH,
                   minWidth: PERIOD_COLUMN_WIDTH,
                 }}
@@ -566,9 +630,68 @@ export default function App() {
                 const showDirectionToggle = flow.kind === 'text'
                 const arrowDirection =
                   row.arrowDirection === 'down' ? 'down' : 'up'
+                const isDragging = draggingId === row.id
+                const isDragOver = dragOverId === row.id && draggingId !== row.id
 
                 return (
-                  <TableRow key={row.id}>
+                  <TableRow
+                    key={row.id}
+                    style={{
+                      opacity: isDragging ? 0.5 : 1,
+                      backgroundColor: isDragOver
+                        ? 'var(--color-background-muted)'
+                        : undefined,
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                      if (dragOverId !== row.id) {
+                        setDragOverId(row.id)
+                      }
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverId === row.id) {
+                        setDragOverId(null)
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      const fromId = Number(
+                        event.dataTransfer.getData('text/plain'),
+                      )
+                      if (Number.isFinite(fromId)) {
+                        reorderPeriod(fromId, row.id)
+                      }
+                      setDraggingId(null)
+                      setDragOverId(null)
+                    }}
+                  >
+                    <TableCell
+                      style={{
+                        width: DRAG_HANDLE_COLUMN_WIDTH,
+                        minWidth: DRAG_HANDLE_COLUMN_WIDTH,
+                        cursor: isDragging ? 'grabbing' : 'grab',
+                      }}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData(
+                          'text/plain',
+                          String(row.id),
+                        )
+                        event.dataTransfer.effectAllowed = 'move'
+                        setDraggingId(row.id)
+                      }}
+                      onDragEnd={() => {
+                        setDraggingId(null)
+                        setDragOverId(null)
+                      }}
+                    >
+                      <Icon
+                        icon="menu"
+                        label={`Reorder period ${row.period}`}
+                        color="secondary"
+                      />
+                    </TableCell>
                     <TableCell>
                       <TextInput
                         label={`Period ${row.period}`}
